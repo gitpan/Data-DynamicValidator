@@ -1,6 +1,6 @@
 package Data::DynamicValidator;
 {
-  $Data::DynamicValidator::VERSION = '0.01';
+  $Data::DynamicValidator::VERSION = '0.02';
 }
 #ABSTRACT: JPointer-like and Perl union for flexible perl data structures validation
 
@@ -289,7 +289,7 @@ Data::DynamicValidator - JPointer-like and Perl union for flexible perl data str
 
 =head1 VERSION
 
-version 0.01
+version 0.02
 
 =head1 SYNOPSIS
 
@@ -555,10 +555,10 @@ understandable for the person, which provides the data.
 
  # Filtering capabilities samples:
 
- '/abc/*[size == 5]'   # filter array/hash by size
- '/abc/*[value eq "z"] # filter array/hash by value equality
- '/abc/*[index > 5]    # finter array by index
- '/abc/*[key =~ /def/] # finter hash by key
+ '/abc/*[size == 5]'    # filter array/hash by size
+ '/abc/*[value eq "z"]' # filter array/hash by value equality
+ '/abc/*[index > 5]'    # finter array by index
+ '/abc/*[key =~ /def/]' # finter hash by key
 
 =head1 DEBUGGING
 

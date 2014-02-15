@@ -1,6 +1,6 @@
 package Data::DynamicValidator;
 {
-  $Data::DynamicValidator::VERSION = '0.02';
+  $Data::DynamicValidator::VERSION = '0.03';
 }
 #ABSTRACT: JPointer-like and Perl union for flexible perl data structures validation
 
@@ -37,7 +37,6 @@ use constant DEBUG => $ENV{DATA_DYNAMICVALIDATOR_DEBUG} || 0;
 
 
 
-
 sub validator {
     return Data::DynamicValidator->new(@_);
 }
@@ -47,7 +46,7 @@ sub new {
     my $self = {
         _data   => $data,
         _errors => [],
-        _level  => 0,
+        _bases  => [],
     };
     return bless $self => $class;
 }
@@ -70,8 +69,10 @@ sub validate {
     my $selection_results;
     if ( !@$errors ) {
         my $success;
-        ($success, $selection_results) = $self->_apply($on, $should);
-        $self->report_error($because, $on)
+        my $current_base = $self->current_base;
+        my $selector = $self->_rebase_selector($on);
+        ($success, $selection_results) = $self->_apply($selector, $should);
+        $self->report_error($because, $selector)
             unless $success;
     }
     # OK, now going to child rules if there is no errors
@@ -99,16 +100,50 @@ sub is_valid { @{ $_[0]->{_errors} } == 0; }
 
 sub errors { $_[0]->{_errors} }
 
+
+sub rebase {
+    my ($self, $expandable_route, $rule) = @_;
+    my $current_base = $self->current_base;
+    my $selector = $self->_rebase_selector($expandable_route);
+    my $scenario = $self->_select($selector);
+    my $number_of_routes = @{ $scenario->{routes} };
+    carp "The route '$expandable_route' is ambigious for rebasing (should be unique)"
+        if $number_of_routes > 1;
+
+    return $self if $number_of_routes == 0;
+
+    push @{ $self->{_bases} }, $scenario->{routes}->[0];
+    $rule->($self);
+    pop @{ $self->{_bases} };
+    return $self;
+}
+
+
+sub current_base {
+    my $bases = $_[0]->{_bases};
+    return undef unless @$bases;
+    return $bases->[-1];
+}
+
 ### private/implementation methods
+
+sub _rebase_selector {
+    my ($self, $selector) = @_;
+    my $current_base = $self->current_base;
+    my $add_base = $current_base && $selector !~ /^\/{2,}/;
+    my $rebased = $add_base ? $current_base . $selector : $selector;
+    warn "-- Rebasing selector $selector to $rebased \n" if DEBUG;
+    return $rebased;
+}
 
 sub _validate_children {
     my ($self, $selection_results, $each) = @_;
     my ($routes, $values) = @{$selection_results}{qw/routes values/};
     my $errors = $self->{_errors};
     my $data = $self->{_data};
-    $self->{_level}++;
     for my $i (0 .. @$routes-1) {
         my $route = $routes->[$i];
+        push @{ $self->{_bases} }, $route;
         my $value = $values->[$i];
         my $label_for = { map { $_ => 1 } ($route->labels) };
         # prepare context
@@ -122,9 +157,9 @@ sub _validate_children {
         # call
         $self->{_current_path} = $route;
         $each->($self, local $_ = Label->new('_', $route, $data));
+        pop @{ $self->{_bases} };
         last if(@$errors);
     }
-    $self->{_level}--;
 }
 
 
@@ -162,9 +197,11 @@ sub _select {
 #  # will return [ '/a/b/0', '/a/b/1', '/a/c/0' ]
 
 sub _expand_routes {
-    my ($self, $expession) = @_;
-    warn "-- Expanding routes for $expession\n" if DEBUG;
-    my @routes = ( Path->new($expession) );
+    my ($self, $expression) = @_;
+    warn "-- Expanding routes for $expression\n" if DEBUG;
+    # striping leading slashes
+    $expression =~ s/\/{2,}/\//;
+    my @routes = ( Path->new($expression) );
     my $result = [];
     while (@routes) {
         my $route = shift(@routes);
@@ -289,7 +326,7 @@ Data::DynamicValidator - JPointer-like and Perl union for flexible perl data str
 
 =head1 VERSION
 
-version 0.02
+version 0.03
 
 =head1 SYNOPSIS
 
@@ -327,7 +364,7 @@ version 0.02
    each    => sub {
      my $f = $_->();
      shift->(
-       on      => "/service_points/*/`$f`/job_slots",
+       on      => "//service_points/*/`$f`/job_slots",
        should  => sub { defined($_[0]) && $_[0] > 0 },
        because => "at least 1 service point should be defined for feature '$f'",
      )
@@ -348,23 +385,35 @@ version 0.02
   each    => sub {
     my ($sp, $f);
     shift->(
-      on      => "/features/`*[value eq '$f']`",
+      on      => "//features/`*[value eq '$f']`",
       should  => sub { 1 },
       because => "Feature '$f' of service point '$sp' should be decrlared in top-level features list",
     )
   },
- )->(
-   on      => '/mojolicious/hypnotoad/pid_file',
-   should  => sub { @_ == 1 },
-   because => "hypnotoad pid_file should be defined",
- )->(
-   on      => '/mojolicious/hypnotoad/listen/*',
-   should  => sub { @_ > 0 },
-   because => "hypnotoad listening interfaces defined",
- )->errors;
+  })->rebase('/mojolicious/hypnotoad' => sub {
+    shift->(
+      on      => '/pid_file',
+      should  => sub { @_ == 1 },
+      because => "hypnotoad pid_file should be defined",
+    )->(
+      on      => '/listen/*',
+      should  => sub { @_ > 0 },
+      because => "hypnotoad listening interfaces defined",
+    );
+  })->errors;
 
  print "all OK\n"
   unless(@$errors);
+
+=head2 RATIONALE
+
+There are complex data configurations, e.g. application configs. Not to
+check them on applicaiton startup is B<wrong>, because of sudden
+unexpected runtime errors can occur, which are not-so-pleasent to detect.
+Write the code, that does full exhaustive checks, is B<boring>.
+
+This module tries to offer to use DLS, that makes data validation fun
+for developer yet understandable for the person, which provides the data.
 
 =head1 DESCRIPTION
 
@@ -395,7 +444,11 @@ To get the results of validation, you can call:
 
 C<on>/C<should> parameters are convenient for validation of presense of
 something, but they aren't so handy in checking of B<individual> values.
-To handle that the optional C<each> pareter has been introduced.
+It should be mentioned, that C<should> closure, always takes an array of
+the selected by C<on>, even if only one element has been selected.
+
+To handle B<individual> values in more convenient way  the optional
+C<each> parameter has been introduced.
 
  my $data = { ports => [2222, 3333] };
  $v->(
@@ -447,7 +500,7 @@ Consider the following example:
 
 Let's validate it. The validation rule sounds as: there is 'ports' section,
 where at least one port > 1000 should be declated, and then the same port
-should appear at top-level, and it should either 'tcp' or 'upd' type.
+should appear at top-level, and it should be either 'tcp' or 'upd' type.
 
  use List::MoreUtils qw/any/;
 
@@ -458,73 +511,42 @@ should appear at top-level, and it should either 'tcp' or 'upd' type.
    each    => sub {
      my $port = $_->();
      shift->(
-       on      => "/*[key eq $port]",
+       on      => "//*[key eq $port]",
        should  => sub { @_ == 1 && any { $_[0] eq $_ } (qw/tcp udp/)  },
        because => "The port $port should be declated at top-level as tcp or udp",
       )
    }
   )->errors;
 
-=head1 METHODS
+As you probably noted, the the path expression contains two slashes at C<on> rule
+inside C<each> rule. This is required to search data from the root, because
+the current element is been set as B<base> before calling C<each>, so all expressions
+inside C<each> are relative to the current element (aka base).
 
-=head2 validate
+You can change the base explicit way via C<rebase> method:
 
-Performs validation based on 'on', 'should', 'because' and optional 'each'
-parameters. Returns the validator itself ($self), to allow further 'chain'
-invocations. The validation will not be performed, if some errors already
-have been detected.
+ my $data = {
+    mojolicious => {
+    	hypnotoad => {
+            pid_file => '/tmp/hypnotoad-ng.pid',
+            listen  => [ 'http://localhost:3000' ],
+        },
+    },
+ };
 
-It is recommended to use overloaded function call, instead of this method
-call. (e.g. $validator->(...) instead of $validato->validate(...);
+ $v->rebase('/mojolicious/hypnotoad' => sub {
+    shift->(
+      on      => '/pid_file',
+      should  => sub { @_ == 1 },
+      because => "hypnotoad pid_file should be defined",
+    )->(
+      on      => '/listen/*',
+      should  => sub { @_ > 0 },
+      because => "hypnotoad listening interfaces defined",
+    );
+ })->errors;
 
-=head2 report_error
-
-The method is used for custom errors reporing. It is mainly usable in 'each'
-closure.
-
- validator({ ports => [1000, 2000, 3000] })->(
-   on      => '/ports/port:*',
-   should  => sub { @_ > 0 },
-   because => "At least one listening port should be defined",
-   each    => sub {
-     my $port;
-     my $port_value = $port->();
-     shift->report_error("Port value $port_value isn't acceptable, because < 1000")
-       if($port_value < 1000);
-   }
- );
-
-=head2 is_valid
-
-Checks, weather validator already has errors
-
-=head2 errors
-
-Returns internal array of errors
-
-=head1 FUNCTIONS
-
-=head2 validator
-
-The enter point for DynamicValidator.
-
- my $errors = validator(...)->(
-   on => "...",
-   should => sub { ... },
-   because => "...",
- )->errors;
-
-=head1 RATIONALE
-
-There are complex data configurations, e.g. application configs. Not to
-check them on applicaiton startup is B<wrong>, because of sudden
-unexpected runtime errors can occur, which not-so-pleasent to detect.
-Write the code, that does full exhaustive checks, is B<boring>.
-
-This module offers to use DLS, that makes data validation funny yet
-understandable for the person, which provides the data.
-
-=head1 DATA PATH EXPRESSIONS
+=head2 DATA PATH EXPRESSIONS
 
  my $data = [qw/a b c d e/];
  '/2'   # selects the 'c' value in $data array
@@ -540,7 +562,8 @@ understandable for the person, which provides the data.
      }
    }
  };
- '/mojolicious/hypnotoad/pid_file' # point to pid_file
+ '/mojolicious/hypnotoad/pid_file'  # point to pid_file
+ '//mojolicious/hypnotoad/pid_file' # point to pid_file (independently of current base)
 
  # Escaping by back-quotes sample
  $data => { "a/b" => { c => 5 } }
@@ -560,12 +583,76 @@ understandable for the person, which provides the data.
  '/abc/*[index > 5]'    # finter array by index
  '/abc/*[key =~ /def/]' # finter hash by key
 
-=head1 DEBUGGING
+=head2 DEBUGGING
 
 You can set the DATA_DYNAMICVALIDATOR_DEBUG environment variable
 to get some advanced diagnostics information printed to "STDERR".
 
  DATA_DYNAMICVALIDATOR_DEBUG=1
+
+=head1 METHODS
+
+=head2 validate
+
+Performs validation based on C<on>, C<should>, C<because> and optional C<each>
+parameters. Returns the validator itself (C<$self>), to allow further C<chain>
+invocations. The validation will not be performed, if some errors already
+have been detected.
+
+It is recommended to use overloaded function call, instead of this method
+call. (e.g. C<$validator->(...)> instead of C<$validato->validate(...)> )
+
+=head2 report_error
+
+The method is used for custom errors reporing. It is mainly usable in C<each>
+closure.
+
+ validator({ ports => [1000, 2000, 3000] })->(
+   on      => '/ports/port:*',
+   should  => sub { @_ > 0 },
+   because => "At least one listening port should be defined",
+   each    => sub {
+     my $port;
+     my $port_value = $port->();
+     shift->report_error("Port value $port_value isn't acceptable, because < 1000")
+       if($port_value < 1000);
+   }
+ );
+
+=head2 is_valid
+
+Checks, whether validator already has errors
+
+=head2 errors
+
+Returns internal array of errors
+
+=head2 rebase
+
+Temporaly sets the new base to the specified route, and invokes the closure
+with the validator instance, i.e.
+
+ $v->('/a' => $closure->($v))
+
+If the data can't be found at the specified route, the C<closure> is not
+invoked.
+
+=head2 current_base
+
+Returns the current base, which is set only inside C<rebase> call or C<each> closure.
+Returns undef is there is no current base.
+
+=head1 FUNCTIONS
+
+=head2 validator
+
+The enter point for DynamicValidator.
+
+ my $errors = validator(...)->(
+   on => "...",
+   should => sub { ... },
+   because => "...",
+ )->errors;
 
 =head1 RESOURCES
 
